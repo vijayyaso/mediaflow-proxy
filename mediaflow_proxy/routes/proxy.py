@@ -517,6 +517,9 @@ _HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
+# Upstream response headers that are wrong once aiohttp has decompressed the body.
+_DECODED_BODY_HEADERS = frozenset({"content-encoding", "content-length"})
+
 # Headers that callers must not inject via h_* params — they enable host-header
 # injection, HTTP request smuggling, or break the session's own framing logic.
 _BLOCKED_REQUEST_HEADERS = frozenset(
@@ -658,7 +661,14 @@ async def proxy_forward_endpoint(
                 if len(resp_body) > max_response_bytes:
                     raise HTTPException(status_code=502, detail="Upstream response too large")
 
-                resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
+                # aiohttp has already decompressed the body, so the upstream encoding and
+                # length headers no longer describe it. Passing them on makes the server
+                # abort the reply ("Too much data for declared Content-Length").
+                resp_headers = {
+                    k: v
+                    for k, v in upstream_resp.headers.items()
+                    if k.lower() not in _HOP_BY_HOP_HEADERS and k.lower() not in _DECODED_BODY_HEADERS
+                }
                 resp_headers.update(proxy_headers.response)
 
                 return Response(

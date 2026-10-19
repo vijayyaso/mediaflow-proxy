@@ -33,10 +33,16 @@ async def _chunked_gzip_handler(request: web.Request) -> web.StreamResponse:
     return resp
 
 
+async def _unknown_encoding_handler(request: web.Request) -> web.Response:
+    # aiohttp does not decode this encoding, so the bytes must pass through labelled.
+    return web.Response(body=b"opaque-encoded-bytes", headers={"Content-Encoding": "x-custom"})
+
+
 @pytest.fixture
 async def upstream_url(monkeypatch):
     app = web.Application()
     app.router.add_get("/data", _chunked_gzip_handler)
+    app.router.add_get("/custom", _unknown_encoding_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -69,4 +75,15 @@ async def test_forward_returns_full_decompressed_gzip_body(upstream_url):
     assert json.loads(response.body) == PAYLOAD
     # The body is already decompressed, so it must not be labelled as gzip.
     assert "content-encoding" not in {k.lower() for k in response.headers.keys()}
+    assert int(response.headers["content-length"]) == len(response.body)
+
+
+async def test_forward_keeps_encoding_header_aiohttp_does_not_decode(upstream_url):
+    headers = ProxyRequestHeaders(request={}, response={}, remove=[], propagate={})
+    destination = upstream_url.replace("/data", "/custom")
+
+    response = await proxy_module.proxy_forward_endpoint(_make_request(), headers, destination=destination)
+
+    assert response.body == b"opaque-encoded-bytes"
+    assert response.headers["content-encoding"] == "x-custom"
     assert int(response.headers["content-length"]) == len(response.body)
